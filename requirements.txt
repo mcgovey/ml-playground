@@ -1,5 +1,9 @@
 pandas
-numpy
+numpy<2.0.0
 scikit-learn
 torch
+torchvision
+torchaudio
 plotly
+pyarrow
+fire

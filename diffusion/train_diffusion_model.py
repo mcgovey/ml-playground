@@ -1,35 +1,13 @@
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, StandardScaler
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
 
-# Load the dataset
-df = pd.read_csv('input/BankChurners.csv')
-
-print(df.head())
-print("Data loaded")
-
-# Drop the last two columns
-df = df.iloc[:, :-2]
-
-# Identify categorical and numerical columns
-categorical_cols = df.select_dtypes(include=['object']).columns
-numerical_cols = df.select_dtypes(include=['int64', 'float64']).columns
-
-# Encode categorical variables
-label_encoders = {}
-for col in categorical_cols:
-    le = LabelEncoder()
-    df[col] = le.fit_transform(df[col])
-    label_encoders[col] = le
-
-# Standardize numerical variables
-scaler = StandardScaler()
-df[numerical_cols] = scaler.fit_transform(df[numerical_cols])
+# Load the preprocessed train data
+train_df = pd.read_parquet('processed/train.parquet')
 
 # Convert DataFrame to tensor
-data_tensor = torch.tensor(df.values, dtype=torch.float32)
+data_tensor = torch.tensor(train_df.values, dtype=torch.float32)
 
 print(data_tensor.shape)
 print("Data tensor created")
@@ -45,7 +23,6 @@ class DiffusionModel(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
 
 # Define dataset and dataloader
 class CreditCardDataset(Dataset):
@@ -88,3 +65,7 @@ for epoch in range(epochs):
         optimizer.step()
 
     print(f"Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}")
+
+# Save the trained model
+torch.save(model.state_dict(), 'processed/diffusion_model.pt')
+print('Model saved to processed/diffusion_model.pt')

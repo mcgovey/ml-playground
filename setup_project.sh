@@ -22,5 +22,4 @@ fi
 echo "Installing dependencies..."
 uv pip install -r requirements.txt
 
-echo "Setup complete! You can now run the generator with:"
-echo "uv run ecommerce_fraud_data_generator.py generate"
+echo "Setup complete!"
