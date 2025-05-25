@@ -7,10 +7,10 @@ import os
 import fire
 from model_utils import DiffusionModel, get_device, set_seed
 
-def main(num_records=None, from_noise=False, test_path='processed/test.parquet', model_path='processed/diffusion_model.pt', encoders_path='processed/label_encoders.pkl', scaler_path='processed/scaler.pkl', num_cols_path='processed/numerical_cols.pkl', binary_cols_path='processed/binary_cols.pkl', device='cpu', seed=42, output_dir='processed'):
+def main(num_records=None, from_noise=False, test_path='processed/test.parquet', model_path='processed/diffusion_model.pt', encoders_path='processed/label_encoders.pkl', scaler_path='processed/scaler.pkl', num_cols_path='processed/numerical_cols.pkl', binary_cols_path='processed/binary_cols.pkl', train_path='processed/train.parquet', device='cpu', seed=42, output_dir='processed'):
     """
     Runs inference with the diffusion model on test data or random noise and saves the output.
-    Post-processes binary columns to ensure they are 0 or 1.
+    Post-processes binary columns to ensure they are 0 or 1, and standardizes numerical columns to match train data.
     """
     set_seed(seed)
     device = get_device(device)
@@ -25,8 +25,9 @@ def main(num_records=None, from_noise=False, test_path='processed/test.parquet',
             true_numerical_cols = pickle.load(f)
         with open(binary_cols_path, 'rb') as f:
             binary_cols = pickle.load(f)
+        train_df = pd.read_parquet(train_path)
     except Exception as e:
-        logging.error(f"Error loading encoders/scaler/binary_cols: {e}")
+        logging.error(f"Error loading encoders/scaler/binary_cols/train: {e}")
         return
 
     if from_noise:
@@ -68,6 +69,12 @@ def main(num_records=None, from_noise=False, test_path='processed/test.parquet',
     for col in binary_cols:
         reconstructed_df[col] = np.clip(reconstructed_df[col], 0, 1)
         reconstructed_df[col] = np.round(reconstructed_df[col]).astype(int)
+
+    # Standardize numerical columns to match train data
+    reconstructed_df[true_numerical_cols] = scaler.transform(reconstructed_df[true_numerical_cols].values)
+
+    # Ensure column order matches train data
+    reconstructed_df = reconstructed_df[train_df.columns]
 
     mode = 'noise' if from_noise else 'test'
     out_path = f'{output_dir}/reconstructed_{mode}_{len(reconstructed_df)}.parquet'

@@ -8,9 +8,10 @@ import json
 import fire
 from model_utils import DiffusionModel, get_device, set_seed
 
-def main(train_path='processed/train.parquet', val_path='processed/val.parquet', output_dir='processed', batch_size=64, epochs=50, lr=1e-3, device='cpu', seed=42, patience=3):
+def main(train_path='processed/train.parquet', val_path='processed/val.parquet', output_dir='processed', batch_size=64, epochs=100, lr=1e-3, device='cpu', seed=42, patience=3, scheduler_factor=0.5, scheduler_patience=5, scheduler_min_lr=1e-6):
     """
     Trains the diffusion model with validation and early stopping.
+    Includes a ReduceLROnPlateau learning rate scheduler.
     """
     set_seed(seed)
     device = get_device(device)
@@ -36,10 +37,13 @@ def main(train_path='processed/train.parquet', val_path='processed/val.parquet',
     model = DiffusionModel(input_dim=data_tensor.shape[1]).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=scheduler_factor, patience=scheduler_patience, min_lr=scheduler_min_lr, verbose=True
+    )
 
     best_val_loss = float('inf')
     patience_counter = 0
-    history = {'train_loss': [], 'val_loss': []}
+    history = {'train_loss': [], 'val_loss': [], 'lr': []}
 
     for epoch in range(epochs):
         model.train()
@@ -66,7 +70,13 @@ def main(train_path='processed/train.parquet', val_path='processed/val.parquet',
             val_loss = criterion(val_output, val_input).item()
         history['val_loss'].append(val_loss)
 
-        logging.info(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        # Log current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        history['lr'].append(current_lr)
+        logging.info(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, LR: {current_lr:.6f}")
+
+        # Step the scheduler
+        scheduler.step(val_loss)
 
         # Early stopping
         if val_loss < best_val_loss:
