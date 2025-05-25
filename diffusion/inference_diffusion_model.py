@@ -1,67 +1,78 @@
 import pandas as pd
 import torch
-import torch.nn as nn
 import pickle
-import fire
 import numpy as np
+import logging
+import os
+import fire
+from model_utils import DiffusionModel, get_device, set_seed
 
-def main(num_records=None, from_noise=False):
-    # Load encoders and scaler (if needed for inverse transform)
-    with open('processed/label_encoders.pkl', 'rb') as f:
-        label_encoders = pickle.load(f)
-    with open('processed/scaler.pkl', 'rb') as f:
-        scaler = pickle.load(f)
-    with open('processed/numerical_cols.pkl', 'rb') as f:
-        true_numerical_cols = pickle.load(f)
+def main(num_records=None, from_noise=False, test_path='processed/test.parquet', model_path='processed/diffusion_model.pt', encoders_path='processed/label_encoders.pkl', scaler_path='processed/scaler.pkl', num_cols_path='processed/numerical_cols.pkl', binary_cols_path='processed/binary_cols.pkl', device='cpu', seed=42, output_dir='processed'):
+    """
+    Runs inference with the diffusion model on test data or random noise and saves the output.
+    Post-processes binary columns to ensure they are 0 or 1.
+    """
+    set_seed(seed)
+    device = get_device(device)
+    logging.basicConfig(level=logging.INFO)
+    os.makedirs(output_dir, exist_ok=True)
+    try:
+        with open(encoders_path, 'rb') as f:
+            label_encoders = pickle.load(f)
+        with open(scaler_path, 'rb') as f:
+            scaler = pickle.load(f)
+        with open(num_cols_path, 'rb') as f:
+            true_numerical_cols = pickle.load(f)
+        with open(binary_cols_path, 'rb') as f:
+            binary_cols = pickle.load(f)
+    except Exception as e:
+        logging.error(f"Error loading encoders/scaler/binary_cols: {e}")
+        return
 
-    # Load the trained model definition
-    class DiffusionModel(nn.Module):
-        def __init__(self, input_dim):
-            super(DiffusionModel, self).__init__()
-            self.net = nn.Sequential(
-                nn.Linear(input_dim, 128),
-                nn.ReLU(),
-                nn.Linear(128, input_dim)
-            )
-
-        def forward(self, x):
-            return self.net(x)
-
-    # Determine input for inference
     if from_noise:
-        # Use the shape of the test data to determine input_dim
-        test_df = pd.read_parquet('processed/test.parquet')
+        try:
+            test_df = pd.read_parquet(test_path)
+        except Exception as e:
+            logging.error(f"Error loading test data for shape: {e}")
+            return
         input_dim = test_df.shape[1]
         n_samples = int(num_records) if num_records is not None else len(test_df)
-        # Generate random noise as input
-        input_tensor = torch.randn((n_samples, input_dim), dtype=torch.float32)
-        data_df = pd.DataFrame(np.zeros((n_samples, input_dim)), columns=test_df.columns)  # placeholder for column names
+        input_tensor = torch.randn((n_samples, input_dim), dtype=torch.float32).to(device)
+        data_df = pd.DataFrame(np.zeros((n_samples, input_dim)), columns=test_df.columns)
     else:
-        # Use test data as input
-        data_df = pd.read_parquet('processed/test.parquet')
+        try:
+            data_df = pd.read_parquet(test_path)
+        except Exception as e:
+            logging.error(f"Error loading test data: {e}")
+            return
         if num_records is not None:
-            data_df = data_df.sample(n=int(num_records), random_state=42).reset_index(drop=True)
-        input_tensor = torch.tensor(data_df.values, dtype=torch.float32)
+            data_df = data_df.sample(n=int(num_records), random_state=seed).reset_index(drop=True)
+        input_tensor = torch.tensor(data_df.values, dtype=torch.float32).to(device)
         input_dim = input_tensor.shape[1]
 
-    # Load the trained model
-    model = DiffusionModel(input_dim=input_dim)
-    model.load_state_dict(torch.load('processed/diffusion_model.pt'))
+    model = DiffusionModel(input_dim=input_dim).to(device)
+    try:
+        model.load_state_dict(torch.load(model_path, map_location=device))
+    except Exception as e:
+        logging.error(f"Error loading model: {e}")
+        return
     model.eval()
 
-    # Run inference
     with torch.no_grad():
-        reconstructed = model(input_tensor).numpy()
+        reconstructed = model(input_tensor).cpu().numpy()
 
-    # Optionally, inverse transform numerical columns
     reconstructed_df = pd.DataFrame(reconstructed, columns=data_df.columns)
     reconstructed_df[true_numerical_cols] = scaler.inverse_transform(reconstructed_df[true_numerical_cols].values)
 
-    # Save the reconstructed outputs
+    # Post-process binary columns: clip to [0, 1] and round
+    for col in binary_cols:
+        reconstructed_df[col] = np.clip(reconstructed_df[col], 0, 1)
+        reconstructed_df[col] = np.round(reconstructed_df[col]).astype(int)
+
     mode = 'noise' if from_noise else 'test'
-    out_path = f'processed/reconstructed_{mode}_{len(reconstructed_df)}.parquet'
+    out_path = f'{output_dir}/reconstructed_{mode}_{len(reconstructed_df)}.parquet'
     reconstructed_df.to_parquet(out_path, index=False)
-    print(f'Inference complete. Reconstructed data saved to {out_path}')
+    logging.info(f'Inference complete. Reconstructed data saved to {out_path}')
 
 if __name__ == '__main__':
     fire.Fire(main)

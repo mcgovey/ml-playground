@@ -2,70 +2,89 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import torch.nn as nn
+import logging
+import os
+import json
+import fire
+from model_utils import DiffusionModel, get_device, set_seed
 
-# Load the preprocessed train data
-train_df = pd.read_parquet('processed/train.parquet')
+def main(train_path='processed/train.parquet', val_path='processed/val.parquet', output_dir='processed', batch_size=64, epochs=50, lr=1e-3, device='cpu', seed=42, patience=3):
+    """
+    Trains the diffusion model with validation and early stopping.
+    """
+    set_seed(seed)
+    device = get_device(device)
+    logging.basicConfig(level=logging.INFO)
 
-# Convert DataFrame to tensor
-data_tensor = torch.tensor(train_df.values, dtype=torch.float32)
+    # Load data
+    train_df = pd.read_parquet(train_path)
+    val_df = pd.read_parquet(val_path)
+    data_tensor = torch.tensor(train_df.values, dtype=torch.float32)
+    val_tensor = torch.tensor(val_df.values, dtype=torch.float32)
 
-print(data_tensor.shape)
-print("Data tensor created")
+    class CreditCardDataset(Dataset):
+        def __init__(self, data):
+            self.data = data
+        def __len__(self):
+            return len(self.data)
+        def __getitem__(self, idx):
+            return self.data[idx]
 
-class DiffusionModel(nn.Module):
-    def __init__(self, input_dim):
-        super(DiffusionModel, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, input_dim)
-        )
+    dataset = CreditCardDataset(data_tensor)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    def forward(self, x):
-        return self.net(x)
+    model = DiffusionModel(input_dim=data_tensor.shape[1]).to(device)
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-# Define dataset and dataloader
-class CreditCardDataset(Dataset):
-    def __init__(self, data):
-        self.data = data
+    best_val_loss = float('inf')
+    patience_counter = 0
+    history = {'train_loss': [], 'val_loss': []}
 
-    def __len__(self):
-        return len(self.data)
+    for epoch in range(epochs):
+        model.train()
+        running_loss = 0.0
+        for batch in dataloader:
+            batch = batch.to(device)
+            noise = torch.randn_like(batch) * 0.1
+            noisy_data = batch + noise
+            output = model(noisy_data)
+            loss = criterion(output, batch)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item() * batch.size(0)
+        train_loss = running_loss / len(dataset)
+        history['train_loss'].append(train_loss)
 
-    def __getitem__(self, idx):
-        return self.data[idx]
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_input = val_tensor.to(device)
+            noise = torch.randn_like(val_input) * 0.1
+            val_output = model(noise + val_input)
+            val_loss = criterion(val_output, val_input).item()
+        history['val_loss'].append(val_loss)
 
-dataset = CreditCardDataset(data_tensor)
-dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+        logging.info(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-print(dataloader)
+        # Early stopping
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            # Save best model
+            os.makedirs(output_dir, exist_ok=True)
+            torch.save(model.state_dict(), f'{output_dir}/diffusion_model.pt')
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logging.info(f"Early stopping at epoch {epoch+1}")
+                break
 
-# Initialize model, loss function, and optimizer
-model = DiffusionModel(input_dim=data_tensor.shape[1])
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    # Save training history
+    with open(f'{output_dir}/training_history.json', 'w') as f:
+        json.dump(history, f)
+    logging.info('Training complete. Model and history saved.')
 
-# Training loop
-epochs = 10
-for epoch in range(epochs):
-    for batch in dataloader:
-        # Add noise to the data
-        noise = torch.randn_like(batch) * 0.1
-        noisy_data = batch + noise
-
-        # Forward pass
-        output = model(noisy_data)
-
-        # Compute loss
-        loss = criterion(output, batch)
-
-        # Backward pass and optimization
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-    print(f"Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}")
-
-# Save the trained model
-torch.save(model.state_dict(), 'processed/diffusion_model.pt')
-print('Model saved to processed/diffusion_model.pt')
+if __name__ == '__main__':
+    fire.Fire(main)
