@@ -7,10 +7,11 @@ import os
 import json
 import fire
 from model_utils import DiffusionModel, get_device, set_seed
+from diffusion_utils import DiffusionProcess
 
-def main(train_path='processed/train.parquet', val_path='processed/val.parquet', output_dir='processed', batch_size=64, epochs=100, lr=1e-3, device='cpu', seed=42, patience=3, scheduler_factor=0.5, scheduler_patience=5, scheduler_min_lr=1e-6):
+def main(train_path='processed/train.parquet', val_path='processed/val.parquet', output_dir='processed', batch_size=64, epochs=100, lr=1e-3, device='cpu', seed=42, patience=3, scheduler_factor=0.5, scheduler_patience=5, scheduler_min_lr=1e-6, diffusion_steps=1000):
     """
-    Trains the diffusion model with validation and early stopping.
+    Trains a DDPM-style diffusion model with validation and early stopping.
     Includes a ReduceLROnPlateau learning rate scheduler.
     """
     set_seed(seed)
@@ -35,6 +36,7 @@ def main(train_path='processed/train.parquet', val_path='processed/val.parquet',
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
     model = DiffusionModel(input_dim=data_tensor.shape[1]).to(device)
+    diffusion = DiffusionProcess(timesteps=diffusion_steps, device=device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -50,10 +52,11 @@ def main(train_path='processed/train.parquet', val_path='processed/val.parquet',
         running_loss = 0.0
         for batch in dataloader:
             batch = batch.to(device)
-            noise = torch.randn_like(batch) * 0.1
-            noisy_data = batch + noise
-            output = model(noisy_data)
-            loss = criterion(output, batch)
+            t = diffusion.sample_timesteps(batch.size(0))
+            noise = torch.randn_like(batch)
+            x_noisy = diffusion.q_sample(batch, t, noise)
+            pred_noise = model(x_noisy, t)
+            loss = criterion(pred_noise, noise)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -65,9 +68,11 @@ def main(train_path='processed/train.parquet', val_path='processed/val.parquet',
         model.eval()
         with torch.no_grad():
             val_input = val_tensor.to(device)
-            noise = torch.randn_like(val_input) * 0.1
-            val_output = model(noise + val_input)
-            val_loss = criterion(val_output, val_input).item()
+            t_val = diffusion.sample_timesteps(val_input.size(0))
+            noise_val = torch.randn_like(val_input)
+            x_noisy_val = diffusion.q_sample(val_input, t_val, noise_val)
+            pred_noise_val = model(x_noisy_val, t_val)
+            val_loss = criterion(pred_noise_val, noise_val).item()
         history['val_loss'].append(val_loss)
 
         # Log current learning rate

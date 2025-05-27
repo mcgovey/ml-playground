@@ -5,13 +5,17 @@ import numpy as np
 
 class DiffusionModel(nn.Module):
     """
-    More complex autoencoder-like model for diffusion tasks.
-    Now includes more layers, batch normalization, and dropout.
+    Autoencoder-like model for diffusion tasks, now accepts timestep embedding.
     """
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, time_embed_dim=32):
         super(DiffusionModel, self).__init__()
+        self.time_embed = nn.Sequential(
+            nn.Linear(1, time_embed_dim),
+            nn.ReLU(),
+            nn.Linear(time_embed_dim, time_embed_dim)
+        )
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+            nn.Linear(input_dim + time_embed_dim, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.2),
@@ -34,7 +38,12 @@ class DiffusionModel(nn.Module):
             nn.Linear(256, input_dim)
         )
 
-    def forward(self, x):
+    def forward(self, x, t):
+        # t: [batch] or [batch, 1]
+        if t.dim() == 1:
+            t = t.unsqueeze(-1)
+        t_embed = self.time_embed(t.float())
+        x = torch.cat([x, t_embed], dim=1)
         return self.net(x)
 
 def get_device(device_preference=None):
